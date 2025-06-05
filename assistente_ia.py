@@ -12,88 +12,123 @@ def carregar_query_engines():
         llm_predictor=llm_predictor, embed_model="local"
     )
     db = chromadb.PersistentClient(path="./chroma_db")
-    chamados_store = ChromaVectorStore(chroma_collection=db.get_or_create_collection("chamados_ia"))
-    conversas_store = ChromaVectorStore(chroma_collection=db.get_or_create_collection("conversas_ia"))
+    collections = [
+        ("chamados", db.get_or_create_collection("chamados_ia")),
+        ("conversas", db.get_or_create_collection("conversas_ia")),
+        ("documentos", db.get_or_create_collection("documentos_texto")),
+    ]
     storage_context = StorageContext.from_defaults(persist_dir="./chroma_db")
+    query_engines = []
+    for nome, coll in collections:
+        store = ChromaVectorStore(chroma_collection=coll)
+        idx = load_index_from_storage(
+            storage_context=storage_context,
+            service_context=service_context,
+            vector_store=store
+        )
+        query_engines.append((nome, idx.as_query_engine()))
+    return query_engines
 
-    chamados_index = load_index_from_storage(
-        storage_context=storage_context,
-        service_context=service_context,
-        vector_store=chamados_store
-    )
-    conversas_index = load_index_from_storage(
-        storage_context=storage_context,
-        service_context=service_context,
-        vector_store=conversas_store
-    )
-    return chamados_index.as_query_engine(), conversas_index.as_query_engine()
-
-def salvar_conversa(pergunta, resposta):
+def salvar_conversa(pergunta, resposta, atendente):
     conn = sqlite3.connect("conversas_chat.db")
     c = conn.cursor()
     c.execute('''
               CREATE TABLE IF NOT EXISTS conversas (
                                                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                                       atendente TEXT,
                                                        pergunta TEXT,
                                                        resposta TEXT,
                                                        data TIMESTAMP
               )
               ''')
     c.execute(
-        "INSERT INTO conversas (pergunta, resposta, data) VALUES (?, ?, ?)",
-        (pergunta, resposta, datetime.now())
+        "INSERT INTO conversas (atendente, pergunta, resposta, data) VALUES (?, ?, ?, ?)",
+        (atendente, pergunta, resposta, datetime.now())
     )
     conn.commit()
     conn.close()
 
-print("Carregando index vetorial local do ChromaDB...")
-chamados_engine, conversas_engine = carregar_query_engines()
-print("Assistente pronto!")
+print("Carregando indices vetoriais locais do ChromaDB...")
+query_engines = carregar_query_engines()
+print("Assistente otimizado pronto!")
 
-def responder_chat(mensagem, historico):
+def responder_chat(mensagem, historico, atendente_nome):
     prompt = (
         "Responda APENAS em português do Brasil, de forma clara, objetiva e profissional. "
         f"Pergunta: {mensagem}"
     )
-    result_chamados = chamados_engine.query(prompt)
-    result_conversas = conversas_engine.query(prompt)
+    trechos = []
+    for nome, engine in query_engines:
+        # Recupera o trecho mais similar de cada base (top_k=1)
+        result = engine.retrieve(prompt)
+        for r in result:
+            content = getattr(r, 'text', '') or getattr(r, 'get_content', lambda: '')()
+            if not content:
+                continue
+            trechos.append(f"[Base: {nome}] {content.strip()}")
 
-    # Tenta pegar a melhor resposta baseado no score (se houver)
-    score_chamados = getattr(result_chamados, "score", None)
-    score_conversas = getattr(result_conversas, "score", None)
+    # Junta todos os trechos em um só contexto para o LLM
+    contexto = "\n\n".join(trechos)
+    llm_prompt = (
+        "Responda APENAS em português do Brasil.\n"
+        "Seja direto, preciso, claro e profissional.\n"
+        "Baseie sua resposta EXCLUSIVAMENTE nas informações fornecidas nos trechos abaixo, retirados das bases do sistema.\n"
+        "NÃO invente informações e não utilize conhecimento próprio fora dos trechos.\n"
+        "Inclua dados concretos, procedimentos, exemplos ou detalhes relevantes sempre que possível.\n"
+        "Se não houver informação suficiente para responder, diga claramente: "
+        "'Não foi possível encontrar uma resposta exata para sua pergunta com base nas informações disponíveis.'\n\n"
+        f"Trechos disponíveis:\n{contexto}\n\nPergunta do usuário: {mensagem}\nResposta:"
+    )
 
-    # Se ambos têm score, escolha a de maior score (menor distância ou maior similaridade)
-    # Adapte conforme seu objeto, pode ser 'similarity', 'score', ou 'confidence'
-    if score_chamados is not None and score_conversas is not None:
-        if score_chamados >= score_conversas:
-            resposta_final = result_chamados.response.strip()
-        else:
-            resposta_final = result_conversas.response.strip()
-    else:
-        # Se não houver score, escolha a resposta mais longa (fallback simples)
-        resposta_final = (
-            result_chamados.response.strip()
-            if len(result_chamados.response) >= len(result_conversas.response)
-            else result_conversas.response.strip()
-        )
+    # UMA chamada ao LLM (Ollama)
+    llm = Ollama(model="llama3")
+    resposta_final = llm(llm_prompt)
 
     historico = historico or []
-    historico.append((mensagem, resposta_final))
-    salvar_conversa(mensagem, resposta_final)
+    historico.append((mensagem, resposta_final.strip()))
+    salvar_conversa(mensagem, resposta_final.strip(), atendente_nome)
     return "", historico, historico
 
 with gr.Blocks(title="Assistente IA - Suporte") as demo:
-    gr.Markdown("# Assistente IA - Suporte\nFaça perguntas sobre chamados. As respostas serão sempre em português.")
-    chatbot = gr.Chatbot(label="Assistente IA (Chamados)", type='tuples')
+    gr.Markdown("# Assistente IA - Suporte\nPreencha o nome do atendente para iniciar o atendimento.")
     with gr.Row():
-        msg = gr.Textbox(placeholder="Digite sua pergunta sobre os chamados...", label="Pergunta")
-        clear = gr.Button("Limpar Chat")
+        atendente_input = gr.Textbox(label="Nome do atendente", placeholder="Digite o nome do atendente...", interactive=True, visible=True)
+        iniciar_btn = gr.Button("Iniciar Atendimento", visible=True)
+    chatbot = gr.Chatbot(label="Assistente IA", type='tuples', visible=False)
+    with gr.Row():
+        msg = gr.Textbox(placeholder="Digite sua pergunta...", label="Pergunta", visible=False)
+        clear = gr.Button("Limpar Chat", visible=False)
     state = gr.State([])
+    atendente_state = gr.State("")
 
-    def submit_message(user_message, chat_history):
-        return responder_chat(user_message, chat_history)
+    def habilitar_chat(nome):
+        if nome.strip() == "":
+            # Mantém escondido se não preencher nome
+            return gr.update(visible=True), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+        # Esconde nome+botão e mostra chat, caixa e limpar
+        return (
+            gr.update(visible=False),  # atendente_input
+            gr.update(visible=False),  # iniciar_btn
+            gr.update(visible=True),   # chatbot
+            gr.update(visible=True),   # msg
+            gr.update(visible=True),   # clear
+        )
 
-    msg.submit(submit_message, [msg, state], [msg, chatbot, state])
+    iniciar_btn.click(
+        habilitar_chat,
+        inputs=[atendente_input],
+        outputs=[atendente_input, iniciar_btn, chatbot, msg, clear]
+    )
+
+    def submit_message(user_message, chat_history, atendente_nome):
+        return responder_chat(user_message, chat_history, atendente_nome)
+
+    msg.submit(
+        submit_message,
+        [msg, state, atendente_input],
+        [msg, chatbot, state]
+    )
     clear.click(lambda: ("", []), None, [msg, chatbot, state])
+
 
 demo.launch(share=True)
