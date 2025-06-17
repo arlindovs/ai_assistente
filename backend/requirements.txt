@@ -11,3 +11,8 @@ ollama
 transformers
 sentence-transformers
 python-dotenv
+fastapi
+uvicorn
+psutil
+python-jose
+requests

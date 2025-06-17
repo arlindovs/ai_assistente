@@ -8,7 +8,7 @@ import chromadb
 
 # --------- CONFIGURAÇÕES ---------
 PASTA_ARQUIVOS = "./arquivos_para_indexar"  # Altere para o seu caminho real!
-CHROMA_PATH = "./chroma_db"
+CHROMA_PATH = "../../chroma_db"
 COLLECTION = "documentos_texto"
 
 llm_predictor = LLMPredictor(llm=None)
@@ -54,14 +54,14 @@ def criar_documentos_llama(textos):
 def indexar_arquivos_em_chroma(documentos_llama):
     db = chromadb.PersistentClient(path=CHROMA_PATH)
     collection = db.get_or_create_collection(COLLECTION)
-    # NÃO limpa a collection — apenas acumula!
     chroma_store = ChromaVectorStore(chroma_collection=collection)
     index = GPTVectorStoreIndex.from_documents(
         documentos_llama,
         vector_store=chroma_store,
         service_context=service_context
     )
-    print("Indexação concluída.")
+    index.storage_context.persist(persist_dir="../../chroma_db/documentos")
+    print("Indexação concluída e persistida.")
 
 if __name__ == "__main__":
     print(f"Lendo arquivos da pasta: {PASTA_ARQUIVOS}")

@@ -47,14 +47,14 @@ def indexar_no_chroma(docs):
         llm_predictor=llm_predictor,
         embed_model="local"
     )
-    db = chromadb.PersistentClient(path="./chroma_db")
+    db = chromadb.PersistentClient(path="../../chroma_db")
     chroma_store = ChromaVectorStore(chroma_collection=db.get_or_create_collection("chamados_ia"))
     index = GPTVectorStoreIndex.from_documents(
         docs,
         service_context=service_context,
         vector_store=chroma_store
     )
-    index.storage_context.persist(persist_dir="./chroma_db")
+    index.storage_context.persist(persist_dir="./chroma_db/chamados")
     print("Index salvo em ./chroma_db/")
 
 if __name__ == "__main__":
