@@ -1,11 +1,11 @@
 import React from "react";
-import { AuthProvider, useAuth } from "./AuthContext";
-import Login from "./components/Login";
-import Dashboard from "./components/Dashboard";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import LoginPage from "@/pages/LoginPage";
+import DashboardPage from "@/pages/DashboardPage";
 
 function AppContent() {
     const { token } = useAuth();
-    return token ? <Dashboard /> : <Login />;
+    return token ? <DashboardPage /> : <LoginPage />;
 }
 
 function App() {
